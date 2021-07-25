@@ -1,3 +1,5 @@
 bamboo
 bin
 *.log
+.idea
+tmp

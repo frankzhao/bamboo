@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,7 +16,6 @@ import (
 
 	"github.com/bgentry/speakeasy"
 	"github.com/gocolly/colly"
-	"github.com/kennygrant/sanitize"
 	homedir "github.com/mitchellh/go-homedir"
 	"github.com/tidwall/gjson"
 )
@@ -48,10 +48,18 @@ func Login(user, pass string) error {
 	})
 
 	// visit the login page (initial GET so we can populate the CSRFToken, etc...)
-	col.Visit(fmt.Sprintf("https://%s.bamboohr.com/login.php", subdomain))
+	err := col.Visit(fmt.Sprintf("https://%s.bamboohr.com/login.php", subdomain))
+	if err != nil {
+		return err
+	}
+
+	col.OnRequest(func(r *colly.Request) {
+		r.Headers.Add("origin", fmt.Sprintf("https://%s.bamboohr.com", subdomain))
+		r.Headers.Add("content-type", "application/x-www-form-urlencoded")
+	})
 
 	// authenticate with a POST
-	err := col.Post(fmt.Sprintf("https://%s.bamboohr.com/login.php", subdomain), map[string]string{
+	err = col.Post(fmt.Sprintf("https://%s.bamboohr.com/login.php", subdomain), map[string]string{
 		"username":  user,
 		"password":  pass,
 		"login":     loginToken,
@@ -66,39 +74,24 @@ func Login(user, pass string) error {
 
 // Candidate - The details tracked for each candidate
 type Candidate struct {
-	ApplicantID           string `json:"applicantId"`
-	Archived              string `json:"archived"`
-	CoverLetterFileID     string `json:"coverLetterFileId"`
-	CoverLetterFileDataID string `json:"coverLetterFileDataId"`
+	CandidateID           int `json:"candidateId"`
+	CoverLetterFileID     int `json:"coverLetterFileId"`
+	CoverLetterFileDataID int `json:"coverLetterFileDataId"`
 	CoverLetterFileName   string `json:"coverLetterFileName"`
-	Email                 string `json:"email"`
-	FirstName             string `json:"firstName"`
-	LastName              string `json:"lastName"`
-	LastUpdatedDate       string `json:"lastUpdatedDate"`
-	Phone                 string `json:"phone"`
-	PositionApplicantID   string `json:"positionApplicantId"`
-	PositionID            string `json:"positionId"`
-	Position              string
-	Rating                string `json:"rating"`
-	ResumeFileID          string `json:"resumeFileId"`
-	ResumeFileDataID      string `json:"resumeFileDataId"`
+	StatusLastUpdated       string `json:"lastUpdatedDate"`
+	ResumeFileID          int `json:"resumeFileId"`
+	ResumeFileDataID      int `json:"resumeFileDataId"`
 	ResumeFileName        string `json:"resumeFileName"`
-	StatusID              string `json:"statusId"`
 	DateAdded             string `json:"dateAdded"`
-	LinkedinURL           string `json:"linkedinUrl"`
-	WebsiteURL            string `json:"websiteUrl"`
 }
 
 // DownloadResume - Download the resume file to the specified path
 func (c *Candidate) DownloadResume(path string) error {
-	FilePath := fmt.Sprintf("%s%s%s-%s-%s-[%s]%s",
+	FilePath := fmt.Sprintf("%s%s%d-%s",
 		path,
 		string(os.PathSeparator),
-		sanitize.BaseName(c.FirstName),
-		sanitize.BaseName(c.LastName),
-		c.Rating,
-		sanitize.BaseName(c.Position),
-		filepath.Ext(c.ResumeFileName))
+		c.CandidateID,
+		c.ResumeFileName)
 	log.Println("evaluating: ", FilePath)
 	// only download if the file does not already exist
 	if _, err := os.Stat(FilePath); os.IsNotExist(err) {
@@ -163,27 +156,34 @@ func QueryCandidates(query string) ([]Candidate, error) {
 		jsonStr := string(r.Body)
 		// fmt.Println(jsonStr)
 
-		ids := gjson.Get(jsonStr, "data.candidates.allIds")
+		ids := gjson.Get(jsonStr, "data.applicationsOrder")
 		//fmt.Println(ids)
 		log.Println("ids to review: ", ids)
 
 		for _, id := range ids.Array() {
 			//fmt.Println(id)
-			details := gjson.Get(jsonStr, fmt.Sprintf("data.candidates.byIds.%d", id.Int()))
+			details := gjson.Get(jsonStr, fmt.Sprintf("data.applications.%d", id.Int()))
 			//fmt.Println(details)
 
 			var candidate Candidate
 			if err := json.Unmarshal([]byte(details.String()), &candidate); err != nil {
 				fmt.Println(err.Error())
 			}
-			candidate.Position = gjson.Get(jsonStr, fmt.Sprintf("data.positions.byIds.%s.name", candidate.PositionID)).String()
+			//candidate.Position = gjson.Get(jsonStr, fmt.Sprintf("data.positions.byIds.%s.name", candidate.PositionID)).String()
 			//fmt.Println(candidate)
-			candidates = append(candidates, candidate)
+			// Filter out candidates with no resume.
+			if candidate.ResumeFileID > 0 {
+				candidates = append(candidates, candidate)
+			}
 		}
 	})
 
 	// do the actual query for the json data
-	col.Visit(fmt.Sprintf("https://%s.bamboohr.com/hiring/candidates?%s", subdomain, query))
+	queryStr := base64.URLEncoding.EncodeToString([]byte(query))
+	err := col.Visit(fmt.Sprintf("https://%s.bamboohr.com/hiring/candidates?q=%s", subdomain, queryStr))
+	if err != nil {
+		return nil, err
+	}
 
 	return candidates, nil
 }
@@ -250,7 +250,8 @@ func main() {
 	}
 
 	// query for candidate data
-	candidates, err := QueryCandidates(fmt.Sprintf("offset=0&limit=%s&sortOrder=DESC", *limit))
+	candidates, err := QueryCandidates(fmt.Sprintf(
+		"offset=0&show=ALL&sort=&sortOrder=DESC&filter=&positionFilter=ALL&source=candidates&limit=%s", *limit))
 	if err != nil {
 		log.Fatal(err)
 	}
