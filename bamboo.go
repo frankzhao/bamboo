@@ -108,7 +108,7 @@ func (c *Candidate) DownloadResume(path string) error {
 		// NOTE -- END
 
 		// expressive file download functionality
-		url := fmt.Sprintf("https://%s.bamboohr.com/files/download.php?id=%s", subdomain, c.ResumeFileID)
+		url := fmt.Sprintf("https://%s.bamboohr.com/files/download.php?id=%d", subdomain, c.ResumeFileID)
 		cookies := col.Cookies(url)
 
 		// Create the file
